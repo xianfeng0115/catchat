@@ -5,9 +5,10 @@
     :copyright: © 2018 Grey Li <withlihui@gmail.com>
     :license: MIT, see LICENSE for more details.
 """
-from flask import render_template, redirect, url_for, request, Blueprint, current_app, abort
+from flask import render_template, redirect, url_for, request, Blueprint, current_app, abort,flash
 from flask_login import current_user, login_required
 from flask_socketio import emit
+import socket,binascii,threading
 
 from catchat.extensions import socketio, db
 from catchat.forms import ProfileForm
@@ -15,16 +16,22 @@ from catchat.models import Message, User
 from catchat.utils import to_html, flash_errors
 
 chat_bp = Blueprint('chat', __name__)
+chat_bp.debug = True
 
 online_users = []
 
-
+# 服务端接收消息并且广播消息
 @socketio.on('new message')
 def new_message(message_body):
-    html_message = to_html(message_body)
+    # 将HTML传过来的格式数据包转为Python格式
+    # html_message = to_html(message_body)
+    html_message = '测试数据'
+    # 将数据包存储在数据库
+    print(current_user)
     message = Message(author=current_user._get_current_object(), body=html_message)
     db.session.add(message)
     db.session.commit()
+    # 发送数据包,message作为参数传入
     emit('new message',
          {'message_html': render_template('chat/_message.html', message=message),
           'message_body': html_message,
@@ -33,23 +40,31 @@ def new_message(message_body):
           'user_id': current_user.id},
          broadcast=True)
 
+# 推送函数
+def test():
+    for i in range(10):
+        data = '服务端发来的测试数据'
+        message = Message(author=current_user._get_current_object(), body=data)
+        emit('new message',
+             {'message_html': render_template('chat/_message.html', message=message),
+              'message_body': data,
+              'gravatar': current_user.gravatar,
+              'nickname': current_user.nickname,
+              'user_id': current_user.id
+              },
+             broadcast=True)
 
-@socketio.on('new message', namespace='/anonymous')
-def new_anonymous_message(message_body):
-    html_message = to_html(message_body)
-    avatar = 'https://www.gravatar.com/avatar?d=mm'
-    nickname = 'Anonymous'
-    emit('new message',
-         {'message_html': render_template('chat/_anonymous_message.html',
-                                          message=html_message,
-                                          avatar=avatar,
-                                          nickname=nickname),
-          'message_body': html_message,
-          'gravatar': avatar,
-          'nickname': nickname,
-          'user_id': current_user.id},
-         broadcast=True, namespace='/anonymous')
+# 希望点击promote按钮后，服务端会推送10包数据到客户端，为了防止卡顿加了个线程
+@chat_bp.route('/promote')
+def promote():
+    t = threading.Thread(target=test)
+    t.setDaemon(True)
+    t.start()
 
+    amount = current_app.config['CATCHAT_MESSAGE_PER_PAGE']
+    messages = Message.query.order_by(Message.timestamp.asc())[-amount:]
+    user_amount = User.query.count()
+    return render_template('chat/home.html', messages=messages, user_amount=user_amount)
 
 @socketio.on('connect')
 def connect():
@@ -58,7 +73,6 @@ def connect():
         online_users.append(current_user.id)
     emit('user count', {'count': len(online_users)}, broadcast=True)
 
-
 @socketio.on('disconnect')
 def disconnect():
     global online_users
@@ -66,19 +80,12 @@ def disconnect():
         online_users.remove(current_user.id)
     emit('user count', {'count': len(online_users)}, broadcast=True)
 
-
 @chat_bp.route('/')
 def home():
     amount = current_app.config['CATCHAT_MESSAGE_PER_PAGE']
     messages = Message.query.order_by(Message.timestamp.asc())[-amount:]
     user_amount = User.query.count()
     return render_template('chat/home.html', messages=messages, user_amount=user_amount)
-
-
-@chat_bp.route('/anonymous')
-def anonymous():
-    return render_template('chat/anonymous.html')
-
 
 @chat_bp.route('/messages')
 def get_messages():
